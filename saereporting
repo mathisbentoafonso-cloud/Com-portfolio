@@ -1,0 +1,892 @@
+# ============================================================
+#  APPLICATION R SHINY - Analyse des Voitures d'Occasion
+#  Lancement : shiny::runApp("app.R") ou bouton "Run App"
+# ============================================================
+
+# install.packages(c("shiny","shinydashboard","ggplot2","dplyr","DT","scales","shinycssloaders"))
+library(shiny)
+library(shinydashboard)
+library(ggplot2)
+library(dplyr)
+library(DT)
+library(scales)
+library(shinycssloaders)
+
+# ============================================================
+#  CHARGEMENT ET NETTOYAGE
+# ============================================================
+voitures <- read.csv("~/Desktop/R/BUT2 S4/reporting/data_cars.csv", stringsAsFactors = FALSE)
+
+voitures$Engine_num   <- as.numeric(gsub(" CC", "", voitures$Engine))
+voitures$Power_num    <- as.numeric(gsub(" bhp", "", voitures$Power))
+voitures$Mileage_num  <- as.numeric(gsub(" kmpl| km/kg", "", voitures$Mileage))
+voitures$NewPrice_num <- as.numeric(gsub(" Lakh| Cr", "", voitures$New_Price))
+
+LAKH_TO_EUR <- 1100
+voitures$Price_eur    <- round(voitures$Price        * LAKH_TO_EUR, 0)
+voitures$NewPrice_eur <- round(voitures$NewPrice_num * LAKH_TO_EUR, 0)
+
+voitures <- voitures %>%
+  filter(!is.na(Price), Price > 0, is.na(Seats) | Seats > 0)
+
+fuel_choices  <- sort(unique(voitures$Fuel_Type))
+owner_choices <- sort(unique(trimws(voitures$Owner_Type)))
+trans_choices <- sort(unique(voitures$Transmission))
+
+# ============================================================
+#  THEME & PALETTE
+# ============================================================
+theme_cars <- function() {
+  theme_minimal(base_size = 13) +
+    theme(
+      plot.background  = element_rect(fill = "transparent", color = NA),
+      panel.background = element_rect(fill = "transparent", color = NA),
+      panel.grid.major = element_line(color = "#e8e8f0"),
+      panel.grid.minor = element_blank(),
+      axis.title       = element_text(color = "#555577"),
+      legend.position  = "bottom",
+      legend.title     = element_text(face = "bold")
+    )
+}
+
+palette_fuel <- c(
+  "Diesel" = "#2c7be5", "Petrol" = "#e55353",
+  "CNG" = "#00b386", "Electric" = "#f4a100", "LPG" = "#9b59b6"
+)
+
+# ============================================================
+#  UI
+# ============================================================
+ui <- dashboardPage(
+  skin = "blue",
+  dashboardHeader(title = "AutoDash — Voitures"),
+
+  dashboardSidebar(
+    sidebarMenu(
+      menuItem("Présentation des données",       tabName = "presentation", icon = icon("book-open")),
+      menuItem("Préparation des données",tabName = "preparation",  icon = icon("wrench")),
+      menuItem("Vue d'ensemble",     tabName = "overview",     icon = icon("gauge-high")),
+      menuItem("Prix & Marché",      tabName = "prix",         icon = icon("chart-line")),
+      menuItem("Caractéristiques",   tabName = "caract",       icon = icon("sliders")),
+      menuItem("Conclusion",         tabName = "conclusion",   icon = icon("flag-checkered")),
+      menuItem("Données brutes",     tabName = "donnees",      icon = icon("table"))
+    ),
+    tags$hr(),
+    tags$p("Filtres", style = "color:#aab; font-weight:bold; padding-left:15px; margin-bottom:5px;"),
+    checkboxGroupInput("f_fuel",  "Carburant :",   choices = fuel_choices,  selected = fuel_choices),
+    checkboxGroupInput("f_trans", "Transmission :", choices = trans_choices, selected = trans_choices),
+    checkboxGroupInput("f_owner", "Proprietaire :", choices = owner_choices, selected = owner_choices),
+    sliderInput("f_year",  "Année :",    min = 1998, max = 2019, value = c(2010, 2019), step = 1, sep = ""),
+    sliderInput("f_price", "Prix (EUR):", min = 0, max = 180000, value = c(0, 90000), step = 1000, sep = " ")
+  ),
+
+  dashboardBody(
+    tags$head(tags$style(HTML("
+      body, .content-wrapper { background-color: #f4f6fb !important; }
+      .box { border-radius:10px; box-shadow:0 2px 12px rgba(0,0,0,0.07); border-top:none !important; }
+      .value-box { border-radius:10px; box-shadow:0 2px 12px rgba(0,0,0,0.1); }
+      .main-sidebar { background-color:#1a1a2e !important; }
+      .main-sidebar .sidebar .sidebar-menu li a { color:#ccd !important; }
+      .main-sidebar .sidebar .sidebar-menu li.active > a {
+        color:white !important; background:#2c7be5 !important; border-radius:8px; }
+      .logo, .skin-blue .main-header .logo { background-color:#1a1a2e !important; }
+      .skin-blue .main-header .navbar { background-color:#2c7be5 !important; }
+      .var-card { background:white; border-radius:10px; padding:14px 18px; margin-bottom:10px;
+        box-shadow:0 2px 8px rgba(0,0,0,0.06); border-left:5px solid #2c7be5; }
+      .var-card.quanti { border-left-color:#e55353; }
+      .var-card h5 { margin:0 0 4px 0; font-weight:700; color:#1a1a2e; font-size:15px; }
+      .var-card p  { margin:0; color:#555; font-size:13px; }
+      .badge-quali  { background:#2c7be5; color:white; border-radius:4px; padding:2px 8px; font-size:11px; margin-right:6px; }
+      .badge-quanti { background:#e55353; color:white; border-radius:4px; padding:2px 8px; font-size:11px; margin-right:6px; }
+      .hero-box { background:linear-gradient(135deg,#1a1a2e 0%,#2c7be5 100%);
+        color:white; border-radius:12px; padding:24px 28px; margin-bottom:20px; }
+      .hero-box h3 { margin-top:0; font-size:20px; }
+      .hero-box p  { font-size:14px; opacity:0.92; margin-bottom:0; line-height:1.8; }
+      .hero-box-green { background:linear-gradient(135deg,#1a1a2e 0%,#374785 100%);
+        color:white; border-radius:12px; padding:22px 28px; margin-bottom:20px; }
+      .hero-box-green h3 { margin-top:0; }
+      .hero-box-green p  { opacity:0.9; font-size:14px; }
+      .hero-box-red { background:linear-gradient(135deg,#2d1515 0%,#8b2020 100%);
+        color:white; border-radius:12px; padding:22px 28px; margin-bottom:20px; }
+      .hero-box-red h3 { margin-top:0; }
+      .hero-box-red p  { opacity:0.9; font-size:14px; }
+      .section-title { font-size:17px; font-weight:700; color:#1a1a2e; margin:20px 0 10px 0;
+        border-bottom:2px solid #e8e8f0; padding-bottom:6px; }
+      .note-graphique { background:#f0f6ff; border-left:4px solid #2c7be5;
+        border-radius:0 8px 8px 0; padding:10px 14px; margin-bottom:8px; font-size:13px; color:#334; }
+      .clean-card { background:white; border-radius:10px; padding:18px 20px; margin-bottom:14px;
+        box-shadow:0 2px 8px rgba(0,0,0,0.06); }
+      .concl-card { background:white; border-radius:10px; padding:18px 22px; margin-bottom:14px;
+        box-shadow:0 2px 8px rgba(0,0,0,0.06); font-size:13px; color:#333; line-height:1.7; }
+      .concl-card h5 { margin:0 0 8px 0; font-size:15px; font-weight:700; color:#1a1a2e; }
+      .stat-kpi { text-align:center; background:white; border-radius:10px; padding:16px 10px;
+        box-shadow:0 2px 8px rgba(0,0,0,0.06); margin-bottom:10px; }
+      .stat-kpi h2 { margin:0; font-size:30px; font-weight:800; }
+      .stat-kpi p  { margin:4px 0 0 0; font-size:13px; color:#666; }
+    "))),
+
+    tabItems(
+
+      # ======================================================
+      # ONGLET 1 : PRESENTATION
+      # ======================================================
+      tabItem(tabName = "presentation",
+
+        fluidRow(column(12,
+          
+        )),
+
+        fluidRow(
+          column(12, div(class = "section-title", icon("database"), " Présentation du jeu de données"))
+        ),
+
+        fluidRow(
+          column(8,
+            div(class = "clean-card",
+              tags$p(style = "font-size:14px; color:#333; line-height:1.8;",
+                "Ce jeu de données est disponible librement sur la plateforme ",
+                tags$a("Kaggle", href = "https://www.kaggle.com/", target = "_blank",
+                       style = "color:#2c7be5; font-weight:bold;"),
+                " sous le nom ", tags$em("Used Cars Dataset"), ". Il a été constitué à partir
+                d'annonces publiées sur le site ", tags$strong("Cars24"),
+                ", l'une des principales plateformes indiennes de vente de voitures d'occasion,
+                et couvre des véhicules mis en vente entre ", tags$strong("1998 et 2019"), "."
+              ),
+              tags$p(style = "font-size:14px; color:#333; line-height:1.8;",
+                "Le fichier brut contient ", tags$strong("6 019 observations"),
+                " et ", tags$strong("13 variables"),
+                " décrivant à la fois les caractéristiques techniques du vehicule
+                (motorisation, puissance, cylindree, consommation) et les informations
+                commerciales (ville de vente, historique de propriété, prix neuf et prix d'occasion).
+                Toutes les annonces proviennent de ", tags$strong("11 grandes villes indiennes"),
+                " : Mumbai, Delhi, Bangalore, Chennai, Pune, Hyderabad, Kolkata, Jaipur,
+                Ahmedabad, Kochi et Coimbatore."
+              ),
+              tags$p(style = "font-size:14px; color:#333; line-height:1.8;",
+                "Les prix sont exprimés en ", tags$strong("Lakh de roupies indiennes"),
+                " dans la source originale (1 Lakh = 100 000 roupies). Pour faciliter la lecture,
+                nous les avons convertis en euros en appliquant un taux fixe de ",
+                tags$strong("1 Lakh = 1 100 EUR"),
+                ". La variable cible de nos analyses est le prix de vente d'occasion
+                (colonne ", tags$code("Price"), "), qui s'étend de ", tags$strong("484 EUR"),
+                " à ", tags$strong("176 000 EUR"), " avec une médiane autour de ",
+                tags$strong("6 000 EUR"), "."
+              )
+            )
+          ),
+          column(4,
+            div(class = "stat-kpi", style = "border-top:4px solid #2c7be5;",
+              tags$h2(style = "color:#2c7be5;", "6 019"),
+              tags$p("observations")
+            ),
+            div(class = "stat-kpi", style = "border-top:4px solid #00b386;",
+              tags$h2(style = "color:#00b386;", "13"),
+              tags$p("variables")
+            ),
+            div(class = "stat-kpi", style = "border-top:4px solid #e55353;",
+              tags$h2(style = "color:#e55353;", "11"),
+              tags$p("villes indiennes")
+            ),
+            div(class = "stat-kpi", style = "border-top:4px solid #f4a100;",
+              tags$h2(style = "color:#f4a100;", "1998-2019"),
+              tags$p("période couverte")
+            )
+          )
+        ),
+
+        fluidRow(column(12,
+          div(class = "section-title", icon("table-columns"), " Description des variables")
+        )),
+
+        fluidRow(
+          column(6,
+            div(class = "section-title", span(class = "badge-quali", "QUALI"), "Variables qualitatives"),
+            div(class = "var-card",
+              tags$h5("Name — Nom du modele"),
+              tags$p("Marque et version exacte du vehicule (ex : Maruti Wagon R LXI CNG).
+                      Variable identifiant avec 1 876 modalités uniques, non utilisée directement dans les analyses.")
+            ),
+            div(class = "var-card",
+              tags$h5("Location — Ville de vente"),
+              tags$p("Ville indienne ou le véhicule est mis en vente (11 modalites).
+                      Permet d'étudier les différences de prix selon le marché local.")
+            ),
+            div(class = "var-card",
+              tags$h5("Fuel_Type — Type de carburant"),
+              tags$p("Nature du carburant : Diesel (45%), Petrol (35%), CNG, LPG, Electric.
+                      Variable clé : le carburant influence la consommation et la valeur de revente.")
+            ),
+            div(class = "var-card",
+              tags$h5("Transmission — Boite de vitesses"),
+              tags$p("Type de transmission : Manuelle (60%) ou Automatique (40%).
+                      Les boites automatiques sont associées à des véhicules de gamme supérieure.")
+            ),
+            div(class = "var-card",
+              tags$h5("Owner_Type — Historique de propriété"),
+              tags$p("Nombre de propriétaires précédents : First, Second, Third, Fourth & Above.
+                      Un véhicule avec peu de propriétaires est mieux valorisé sur le marché.")
+            )
+          ),
+          column(6,
+            div(class = "section-title", span(class = "badge-quanti", "QUANTI"), "Variables quantitatives"),
+            div(class = "var-card quanti",
+              tags$h5("Year — Année de fabrication"),
+              tags$p("Année de mise en circulation (1998 à 2019, 22 valeurs distinctes).
+                      Plus le véhicule est récent, plus il conserve de sa valeur.")
+            ),
+            div(class = "var-card quanti",
+              tags$h5("Kilometers_Driven — Kilometrage"),
+              tags$p("Kilomètres parcourus au moment de la vente.
+                      Indicateur d'usure direct : un kilometrage élevé déprecie le véhicule.")
+            ),
+            div(class = "var-card quanti",
+              tags$h5("Mileage — Consommation (kmpl / km/kg)"),
+              tags$p("Efficacité énergétique en km par litre ou km par kg (CNG/LPG).
+                      Critère d'achat important sur un marché sensible aux prix du carburant.")
+            ),
+            div(class = "var-card quanti",
+              tags$h5("Engine — Cylindree (CC)"),
+              tags$p("Taille du moteur en centimètres cubes (624 a 5 998 CC).
+                      Une grosse cylindree signale généralement un véhicule premium.")
+            ),
+            div(class = "var-card quanti",
+              tags$h5("Power — Puissance (bhp)"),
+              tags$p("Puissance en brake horse power (34 a 560 bhp).
+                      Correlée à la cylindree et au prix : les véhicules sportifs ou luxueux ont plus de puissance.")
+            ),
+            div(class = "var-card quanti",
+              tags$h5("Seats — Nombre de places"),
+              tags$p("Capacité d'accueil (2 a 10 places).
+                      Permet de distinguer citadine, familiale, SUV, minibus.")
+            ),
+            div(class = "var-card quanti",
+              tags$h5("New_Price — Prix neuf (EUR)"),
+              tags$p("Prix catalogue neuf converti en euros")
+            ),
+            div(class = "var-card quanti", style = "border-left-color:#f4a100; border-left-width:6px;",
+              tags$h5(icon("bullseye", style = "color:#f4a100;"), " Price — Prix d'occasion (EUR)  [VARIABLE CIBLE]"),
+              tags$p("Prix de vente d'occasion converti en euros (1 Lakh = 1 100 EUR).
+                      C'est la variable que l'on cherche à expliquer dans toutes nos analyses.
+                      Etendue : 484 EUR a 176 000 EUR, médiane ~ 6 000 EUR.")
+            )
+          )
+        ),
+        div(class = "hero-box",
+            h3(icon("magnifying-glass"), " Problématique"),
+            tags$p(tags$strong("Quels facteurs influencent le prix de revente d'une voiture d'occasion en Inde ?"),
+                   br(), br(),
+                   "Le marché de l'automobile d'occasion connait une croissance rapide en Inde, portée par
+              l'essor d'une classe moyenne et le développement de plateformes numériques telles que Cars24.
+              Dans ce contexte, comprendre ce qui détermine la valeur de revente d'un véhicule constitue
+              un enjeu stratégique aussi bien pour les vendeurs que pour les acheteurs. Ce tableau de bord
+              explore les liens entre les caractéristiques d'un véhicule : son âge, son kilometrage,
+              sa motorisation, sa puissance, son type de carburant et son prix de vente sur le marché
+              secondaire indien, afin d'identifier les facteurs les plus déterminants."
+            )
+        )
+      ),
+
+      # ======================================================
+      # ONGLET 2 : PREPARATION DES DONNEES
+      # ======================================================
+      tabItem(tabName = "preparation",
+
+        fluidRow(column(12,
+          div(class = "hero-box-green",
+            h3(icon("wrench"), " Préparation, nettoyage et structure des données"),
+            tags$p("Avant toute analyse, le jeu de données brut a nécessité plusieurs étapes de transformation.
+              Cette page documente l'ensemble des traitements appliqués, les observations supprimées
+              et les raisons qui les justifient, dans un souci de transparence et de reproductibilité.")
+          )
+        )),
+
+        fluidRow(column(12,
+          div(class = "section-title", icon("trash"), " Observations et valeurs supprimées ou corrigées")
+        )),
+
+        fluidRow(
+          column(6,
+            div(class = "clean-card", style = "border-left:5px solid #e55353;",
+              tags$h5(style = "color:#1a1a2e; margin:0 0 8px 0;",
+                icon("circle-exclamation", style = "color:#e55353;"), " Seats = 0 — suppression"),
+              tags$p(style = "font-size:13px; color:#444; line-height:1.7;",
+                "42 observations présentaient un nombre de places égal à 0, ce qui est
+                physiquement impossible pour un véhicule. Ces lignes ont été
+                supprimées car il s'agit vraisemblablement d'erreurs de saisie dans la base originale."),
+              tags$p(style = "font-size:12px; color:#e55353; font-weight:bold; margin-top:8px;",
+                icon("arrow-right"), " 42 lignes supprimées")
+            ),
+            div(class = "clean-card", style = "border-left:5px solid #e55353;",
+              tags$h5(style = "color:#1a1a2e; margin:0 0 8px 0;",
+                icon("circle-exclamation", style = "color:#e55353;"), " Price = 0 ou NA — suppression"),
+              tags$p(style = "font-size:13px; color:#444; line-height:1.7;",
+                "Quelques observations affichaient un prix de vente nul ou manquant, ce qui n'a
+                pas de sens dans le contexte d'annonces de vente. Ces lignes ont été retirées
+                pour éviter de biaiser les calculs de moyenne et les visualisations de prix."),
+              tags$p(style = "font-size:12px; color:#e55353; font-weight:bold; margin-top:8px;",
+                icon("arrow-right"), " Lignes à prix nul ou manquant supprimées")
+            ),
+            div(class = "clean-card", style = "border-left:5px solid #f4a100;",
+              tags$h5(style = "color:#1a1a2e; margin:0 0 8px 0;",
+                icon("triangle-exclamation", style = "color:#f4a100;"), " Kilometrage aberrant — exclusion du graphique"),
+              tags$p(style = "font-size:13px; color:#444; line-height:1.7;",
+                "Une observation Diesel affichait un kilometrage superieur a 6 000 000 km, ce qui
+                est manifestement une erreur de saisie (une voiture parcourt environ 15 000 km/an
+                en moyenne, soit ~300 000 km sur 20 ans). Cette valeur n'est pas supprimée du dataset
+                principal, mais est exclue du graphique Kilometrage vs Prix via un filtre
+                (Kilometers_Driven < 1 000 000) pour ne pas écraser l'échelle de visualisation."),
+              tags$p(style = "font-size:12px; color:#f4a100; font-weight:bold; margin-top:8px;",
+                icon("arrow-right"), " 1 point exclu de la visualisation uniquement")
+            )
+          ),
+          column(6,
+            div(class = "clean-card", style = "border-left:5px solid #2c7be5;",
+              tags$h5(style = "color:#1a1a2e; margin:0 0 8px 0;",
+                icon("code", style = "color:#2c7be5;"), " Colonnes texte avec unités — conversion numérique"),
+              tags$p(style = "font-size:13px; color:#444; line-height:1.7;",
+                "Quatre colonnes étaient stockées comme du texte avec leur unité collée au nombre,
+                les rendant inutilisables pour les calculs statistiques et les graphiques.
+                Les unités ont été retirées par expression régulière (gsub) et les valeurs
+                converties en type numérique :"),
+              tags$ul(style = "font-size:13px; color:#444; margin-top:8px;",
+                tags$li(tags$code("Engine"), " : '1582 CC' devient 1582"),
+                tags$li(tags$code("Power"),  " : '126.2 bhp' devient 126.2"),
+                tags$li(tags$code("Mileage"), " : '19.67 kmpl' ou '26.6 km/kg' devient 19.67"),
+                tags$li(tags$code("New_Price"), " : '8.61 Lakh' devient 8.61")
+              ),
+              tags$p(style = "font-size:12px; color:#2c7be5; font-weight:bold; margin-top:8px;",
+                icon("arrow-right"), " 4 nouvelles colonnes numériques créées")
+            ),
+            div(class = "clean-card", style = "border-left:5px solid #00b386;",
+              tags$h5(style = "color:#1a1a2e; margin:0 0 8px 0;",
+                icon("euro-sign", style = "color:#00b386;"), " Conversion des prix en euros"),
+              tags$p(style = "font-size:13px; color:#444; line-height:1.7;",
+                "Les prix originaux sont exprimés en Lakh de roupies indiennes (1 Lakh = 100 000 Rs).
+                Pour faciliter l'interprétation par un public européen, les colonnes Price et
+                New_Price ont été multipliées par un taux fixe de 1 Lakh = 1 100 EUR.
+                Ce taux est approximatif et fixe au moment de l'étude ;
+                il ne tient pas compte des fluctuations de change."),
+              tags$ul(style = "font-size:13px; color:#444; margin-top:8px;",
+                tags$li(tags$code("Price_eur"), " = Price x 1 100"),
+                tags$li(tags$code("NewPrice_eur"), " = NewPrice_num x 1 100")
+              ),
+              tags$p(style = "font-size:12px; color:#00b386; font-weight:bold; margin-top:8px;",
+                icon("arrow-right"), " 2 nouvelles colonnes en euros créées")
+            )
+          )
+        ),
+
+        fluidRow(column(12,
+          div(class = "section-title", icon("table"), " Structure finale du dataset après nettoyage")
+        )),
+        fluidRow(column(12,
+          div(class = "clean-card",
+            tags$table(style = "width:100%; border-collapse:collapse; font-size:13px;",
+              tags$thead(
+                tags$tr(style = "background:#f0f4ff; font-weight:bold;",
+                  tags$th(style = "padding:10px; text-align:left; border-bottom:2px solid #dde;", "Variable"),
+                  tags$th(style = "padding:10px; text-align:center; border-bottom:2px solid #dde;", "Type"),
+                  tags$th(style = "padding:10px; text-align:center; border-bottom:2px solid #dde;", "NA"),
+                  tags$th(style = "padding:10px; text-align:left; border-bottom:2px solid #dde;", "Etendue / Modalites"),
+                  tags$th(style = "padding:10px; text-align:left; border-bottom:2px solid #dde;", "Statut")
+                )
+              ),
+              tags$tbody(
+                tags$tr(
+                  tags$td(style="padding:8px 10px;", tags$code("Name")),
+                  tags$td(style="padding:8px; text-align:center;", span(class="badge-quali","QUALI")),
+                  tags$td(style="padding:8px; text-align:center; color:#999;", "0"),
+                  tags$td(style="padding:8px;", "1 876 modeles uniques"),
+                  tags$td(style="padding:8px; color:#999;", "Original")),
+                tags$tr(style="background:#f9f9f9;",
+                  tags$td(style="padding:8px 10px;", tags$code("Location")),
+                  tags$td(style="padding:8px; text-align:center;", span(class="badge-quali","QUALI")),
+                  tags$td(style="padding:8px; text-align:center; color:#999;", "0"),
+                  tags$td(style="padding:8px;", "11 villes"),
+                  tags$td(style="padding:8px; color:#999;", "Original")),
+                tags$tr(
+                  tags$td(style="padding:8px 10px;", tags$code("Year")),
+                  tags$td(style="padding:8px; text-align:center;", span(class="badge-quanti","QUANTI")),
+                  tags$td(style="padding:8px; text-align:center; color:#999;", "0"),
+                  tags$td(style="padding:8px;", "1998 a 2019"),
+                  tags$td(style="padding:8px; color:#999;", "Original")),
+                tags$tr(style="background:#f9f9f9;",
+                  tags$td(style="padding:8px 10px;", tags$code("Kilometers_Driven")),
+                  tags$td(style="padding:8px; text-align:center;", span(class="badge-quanti","QUANTI")),
+                  tags$td(style="padding:8px; text-align:center; color:#999;", "0"),
+                  tags$td(style="padding:8px;", "500 km a 6 000 000 km (1 aberrant)"),
+                  tags$td(style="padding:8px; color:#f4a100;", "Aberrant exclu du graphique")),
+                tags$tr(
+                  tags$td(style="padding:8px 10px;", tags$code("Fuel_Type")),
+                  tags$td(style="padding:8px; text-align:center;", span(class="badge-quali","QUALI")),
+                  tags$td(style="padding:8px; text-align:center; color:#999;", "0"),
+                  tags$td(style="padding:8px;", "Diesel, Petrol, CNG, LPG, Electric"),
+                  tags$td(style="padding:8px; color:#999;", "Original")),
+                tags$tr(style="background:#f9f9f9;",
+                  tags$td(style="padding:8px 10px;", tags$code("Transmission")),
+                  tags$td(style="padding:8px; text-align:center;", span(class="badge-quali","QUALI")),
+                  tags$td(style="padding:8px; text-align:center; color:#999;", "0"),
+                  tags$td(style="padding:8px;", "Manual, Automatic"),
+                  tags$td(style="padding:8px; color:#999;", "Original")),
+                tags$tr(
+                  tags$td(style="padding:8px 10px;", tags$code("Owner_Type")),
+                  tags$td(style="padding:8px; text-align:center;", span(class="badge-quali","QUALI")),
+                  tags$td(style="padding:8px; text-align:center; color:#999;", "0"),
+                  tags$td(style="padding:8px;", "First, Second, Third, Fourth & Above"),
+                  tags$td(style="padding:8px; color:#999;", "Original")),
+                tags$tr(style="background:#f9f9f9;",
+                  tags$td(style="padding:8px 10px;", tags$code("Engine_num"), tags$small(style="color:#aaa;"," (cree)")),
+                  tags$td(style="padding:8px; text-align:center;", span(class="badge-quanti","QUANTI")),
+                  tags$td(style="padding:8px; text-align:center; color:#f4a100;", "36"),
+                  tags$td(style="padding:8px;", "624 CC a 5 998 CC"),
+                  tags$td(style="padding:8px; color:#2c7be5;", "Derive de Engine")),
+                tags$tr(
+                  tags$td(style="padding:8px 10px;", tags$code("Power_num"), tags$small(style="color:#aaa;"," (cree)")),
+                  tags$td(style="padding:8px; text-align:center;", span(class="badge-quanti","QUANTI")),
+                  tags$td(style="padding:8px; text-align:center; color:#f4a100;", "36"),
+                  tags$td(style="padding:8px;", "34 a 560 bhp"),
+                  tags$td(style="padding:8px; color:#2c7be5;", "Derive de Power")),
+                tags$tr(style="background:#f9f9f9;",
+                  tags$td(style="padding:8px 10px;", tags$code("Mileage_num"), tags$small(style="color:#aaa;"," (cree)")),
+                  tags$td(style="padding:8px; text-align:center;", span(class="badge-quanti","QUANTI")),
+                  tags$td(style="padding:8px; text-align:center; color:#f4a100;", "2"),
+                  tags$td(style="padding:8px;", "10 a 30 kmpl / km/kg"),
+                  tags$td(style="padding:8px; color:#2c7be5;", "Derive de Mileage")),
+                tags$tr(
+                  tags$td(style="padding:8px 10px;", tags$code("Seats")),
+                  tags$td(style="padding:8px; text-align:center;", span(class="badge-quanti","QUANTI")),
+                  tags$td(style="padding:8px; text-align:center; color:#f4a100;", "42"),
+                  tags$td(style="padding:8px;", "2 a 10 places (0 supprimé)"),
+                  tags$td(style="padding:8px; color:#e55353;", "Aberrants supprimés")),
+                tags$tr(style="background:#f9f9f9;",
+                  tags$td(style="padding:8px 10px;", tags$code("NewPrice_eur"), tags$small(style="color:#aaa;"," (cree)")),
+                  tags$td(style="padding:8px; text-align:center;", span(class="badge-quanti","QUANTI")),
+                  tags$td(style="padding:8px; text-align:center; color:#e55353;", "5 195"),
+                  tags$td(style="padding:8px;", "2 200 EUR a 220 000 EUR"),
+                  tags$td(style="padding:8px; color:#2c7be5;", "Derive de New_Price")),
+                tags$tr(style="background:#fff8e1;",
+                  tags$td(style="padding:8px 10px; font-weight:bold;",
+                    tags$code("Price_eur"), tags$small(style="color:#aaa;"," (cree)"), " — CIBLE"),
+                  tags$td(style="padding:8px; text-align:center;", span(class="badge-quanti","QUANTI")),
+                  tags$td(style="padding:8px; text-align:center; color:#999;", "0"),
+                  tags$td(style="padding:8px;", "484 EUR a 176 000 EUR"),
+                  tags$td(style="padding:8px; color:#f4a100; font-weight:bold;", "Variable cible"))
+              )
+            )
+          )
+        ))
+      ),
+
+      # ======================================================
+      # ONGLET 3 : VUE D'ENSEMBLE
+      # ======================================================
+      tabItem(tabName = "overview",
+        fluidRow(
+          valueBoxOutput("vb_total",    width = 3),
+          valueBoxOutput("vb_prix_moy", width = 3),
+          valueBoxOutput("vb_km_moy",   width = 3),
+          valueBoxOutput("vb_age_moy",  width = 3)
+        ),
+        fluidRow(
+          box(title = "Distribution des Prix", width = 6, solidHeader = TRUE, status = "primary",
+              withSpinner(plotOutput("g_hist_prix", height = 280), color = "#2c7be5")),
+          box(title = "Prix médian par Carburant", width = 6, solidHeader = TRUE, status = "primary",
+              withSpinner(plotOutput("g_box_fuel", height = 280), color = "#2c7be5"))
+        ),
+        fluidRow(
+          box(title = "Répartition par Carburant", width = 4, solidHeader = TRUE, status = "info",
+              withSpinner(plotOutput("g_pie_fuel", height = 250), color = "#2c7be5")),
+          box(title = "Répartition par Transmission", width = 4, solidHeader = TRUE, status = "info",
+              withSpinner(plotOutput("g_bar_trans", height = 250), color = "#2c7be5")),
+          box(title = "Répartition par Propriétaire", width = 4, solidHeader = TRUE, status = "info",
+              withSpinner(plotOutput("g_bar_owner", height = 250), color = "#2c7be5"))
+        )
+      ),
+
+      # ======================================================
+      # ONGLET 4 : PRIX & MARCHE
+      # ======================================================
+      tabItem(tabName = "prix",
+        fluidRow(
+          box(title = "Évolution du Prix Moyen par Année", width = 12, solidHeader = TRUE, status = "primary",
+              withSpinner(plotOutput("g_line_annee", height = 300), color = "#2c7be5"))
+        ),
+        fluidRow(
+          box(title = "Kilometrage vs Prix", width = 12, solidHeader = TRUE, status = "warning",
+              withSpinner(plotOutput("g_scatter_km", height = 300), color = "#f4a100"))
+        ),
+        fluidRow(
+          box(title = "Prix moyen par Ville", width = 6, solidHeader = TRUE, status = "warning",
+              withSpinner(plotOutput("g_bar_ville", height = 300), color = "#f4a100")),
+          box(title = "Prix par Type de Propriétaire", width = 6, solidHeader = TRUE, status = "success",
+              withSpinner(plotOutput("g_box_owner", height = 300), color = "#00b386"))
+        )
+      ),
+
+      # ======================================================
+      # ONGLET 5 : CARACTERISTIQUES
+      # ======================================================
+      tabItem(tabName = "caract",
+        fluidRow(
+          box(title = "Puissance (bhp) vs Prix", width = 6, solidHeader = TRUE, status = "primary",
+              div(class = "note-graphique",
+                icon("circle-info"), " La puissance est un indicateur direct de performance. Un moteur
+                plus puissant correspond généralement à un segment premium, ce qui se traduit par une
+                valeur de revente plus élevée. Le prix est la variable cible car c'est lui que
+                l'acheteur optimise en premier."),
+              withSpinner(plotOutput("g_scatter_power", height = 260), color = "#2c7be5")),
+          box(title = "Cylindree (CC) vs Prix", width = 6, solidHeader = TRUE, status = "primary",
+              div(class = "note-graphique",
+                icon("circle-info"), " La cylindree mesure la taille du moteur et est fortement
+                correlée au standing du véhicule. On la croise avec le prix car les grosses
+                cylindrees signalent des voitures haut de gamme dont la dépréciation suit une
+                trajectoire différente des petits moteurs."),
+              withSpinner(plotOutput("g_scatter_engine", height = 260), color = "#2c7be5"))
+        ),
+        fluidRow(
+          box(title = "Consommation (kmpl) vs Prix", width = 6, solidHeader = TRUE, status = "info",
+              div(class = "note-graphique",
+                icon("circle-info"), " La consommation reflète l'efficacité énergétique du moteur.
+                On l'analyse par rapport au prix car les véhicules tres économes peuvent être
+                plus recherchés sur le marché de l'occasion, influencant ainsi leur valeur de revente."),
+              withSpinner(plotOutput("g_scatter_mileage", height = 260), color = "#2c7be5")),
+          box(title = "Prix moyen par Nombre de Places", width = 6, solidHeader = TRUE, status = "info",
+              div(class = "note-graphique",
+                icon("circle-info"), " Le nombre de places détermine la catégorie du véhicule
+                (citadine, berline, monospace, SUV). On compare le prix moyen par segment car
+                la capacité d'accueil segmente le marché et explique une partie importante
+                des écarts de prix entre modèles."),
+              withSpinner(plotOutput("g_bar_seats", height = 260), color = "#2c7be5"))
+        )
+      ),
+
+      # ======================================================
+      # ONGLET 6 : DONNEES BRUTES
+      # ======================================================
+      tabItem(tabName = "donnees",
+        fluidRow(
+          box(width = 12, solidHeader = TRUE, status = "primary",
+              title = "Tableau interactif — triable, filtrable, exportable",
+              DTOutput("tableau"))
+        )
+      ),
+
+      # ======================================================
+      # ONGLET 7 : CONCLUSION
+      # ======================================================
+      tabItem(tabName = "conclusion",
+
+        fluidRow(column(12,
+          div(class = "hero-box-red",
+            h3(icon("flag-checkered"), " Conclusion, limites et perspectives"),
+            tags$p("Ce tableau de bord a permis d'explorer les principaux facteurs associés au prix
+              de revente d'une voiture d'occasion en Inde. Cette dernière page synthétise les
+              principaux enseignements de l'analyse, identifie les limites du dataset et propose
+              des pistes pour aller plus loin.")
+          )
+        )),
+
+        fluidRow(
+          column(6,
+            div(class = "section-title", icon("check-circle"), " Principaux enseignements"),
+            div(class = "concl-card", style = "border-left:4px solid #00b386;",
+              tags$h5(icon("chart-line", style="color:#00b386;"), " Des facteurs déterminants bien identifiés"),
+              tags$p("Les analyses montrent que le prix de revente est principalement influencé par
+                l'année de fabrication (les voitures récentes valent significativement plus),
+                le kilometrage (relation négative claire : plus une voiture a roulé, moins elle vaut),
+                la puissance et la cylindree du moteur (les véhicules premium conservent mieux leur valeur),
+                ainsi que le type de carburant (les vehicules diesel ressortent souvent en tête
+                en termes de prix median). Le type de boite (automatique vs manuelle) et
+                l'historique de propriété ont également un effet visible.")
+            ),
+            div(class = "concl-card", style = "border-left:4px solid #2c7be5;",
+              tags$h5(icon("city", style="color:#2c7be5;"), " Des disparités géographiques modérées"),
+              tags$p("Les prix moyens varient selon les villes mais de manière moderée. Certaines
+                villes comme Coimbatore ou Ahmedabad affichent des prix légèrement plus bas que
+                Mumbai ou Pune. Ces écarts peuvent refleter des différences de pouvoir d'achat
+                local, de demande, ou de composition du parc automobile mis en vente.")
+            ),
+
+            div(class = "section-title", icon("triangle-exclamation"), " Limites de l'étude"),
+            div(class = "concl-card", style = "border-left:4px solid #e55353;",
+              tags$h5(icon("globe-asia", style="color:#e55353;"), " Données exclusivement indiennes"),
+              tags$p("L'integralité des annonces provient du marché indien (11 villes).
+                Les modèles de voitures, les niveaux de prix, les préférences de carburant
+                et les comportements d'achat sont spécifiques à ce contexte.
+                Les conclusions ne sont pas directement transposables au marché européen,
+                francais ou mondial. Par exemple, la forte présence du CNG et du Diesel
+                répond à des logiques de prix du carburant et de fiscalité propres à l'Inde.")
+            ),
+            div(class = "concl-card", style = "border-left:4px solid #e55353;",
+              tags$h5(icon("clock", style="color:#e55353;"), " Données potentiellement obsolètes"),
+              tags$p("Le dataset couvre des annonces allant jusqu'en 2019. Le marche automobile
+                a connu des bouleversements importants depuis : essor des véhicules électriques,
+                hausse des prix des carburants, impacts de la crise COVID sur les chaines
+                d'approvisionnement, et flambée des prix de l'occasion en 2021-2023.
+                Les tendances observées ici ne reflètent pas nécessairement la situation actuelle.")
+            )
+          ),
+
+          column(6,
+            div(class = "section-title", icon("rocket"), " Perspectives et analyses approfondies"),
+            div(class = "concl-card", style = "border-left:4px solid #9b59b6;",
+              tags$h5(icon("robot", style="color:#9b59b6;"), " Simulateur de prix par apprentissage automatique"),
+              tags$p("Une extension naturelle de ce travail serait la construction d'un simulateur
+                permettant de prédire le prix d'une voiture à partir de ses caractéristiques.
+                En entrainant un modèle de regression (linéaire, multiple) sur ce dataset, on pourrait proposer a l'utilisateur de saisir
+                les caractéristiques d'un véhicule (année, kilometrage, carburant, puissance...)
+                et obtenir une estimation de son prix de revente, directement dans l'interface Shiny.")
+            ),
+            div(class = "concl-card", style = "border-left:4px solid #9b59b6;",
+              tags$h5(icon("flask", style="color:#9b59b6;"), " Inférence statistique"),
+              tags$p("Les visualisations exploratoires presentées ici permettent d'identifier des
+                tendances, mais ne permettent pas de conclure formellement a des relations
+                statistiquement significatives. Une étape d'inférence serait nécessaire :
+                tests de comparaison de moyennes (ANOVA) pour comparer les prix selon le carburant
+                ou le type de propriétaire, tests de corrélation (Pearson, Spearman) pour mesurer
+                l'intensité du lien entre kilometrage, puissance et prix.")
+            ),
+            div(class = "concl-card", style = "border-left:4px solid #9b59b6;",
+              tags$h5(icon("chart-bar", style="color:#9b59b6;"), " Modélisation et regression multiple"),
+              tags$p("Une regression linéaire multiple permettrait d'estimer la contribution
+                individuelle de chaque variable au prix. On pourrait se demander : quel est l'effet net du type de carburant sur le prix en prenant en compte l'année et le kilometrage ? Des modèles plus avancés
+                regression sur variables categorielles via encodage) offriraient une meilleure
+                précision prédictive.")
+            ),
+            div(class = "concl-card", style = "border-left:4px solid #9b59b6;",
+              tags$h5(icon("layer-group", style="color:#9b59b6;"), " Segmentation et clustering"),
+              tags$p("Une analyse de clustering (k-means, CAH) pourrait permettre de regrouper
+                automatiquement les vehicules en segments homogènes (ex : 'citadines',
+                'SUV premium diesel', 'véhicules anciens à faible valeur'...). Cette segmentation
+                permettrait d'adapter les recommandations de prix selon le profil du véhicule,
+                et de mieux cibler les annonces selon le profil de l'acheteur.")
+            ),
+            div(class = "concl-card", style = "border-left:4px solid #9b59b6;",
+              tags$h5(icon("map", style="color:#9b59b6;"), " Enrichissement géographique"),
+              tags$p("L'ajout de donées géographiques supplémentaires (PIB par habitant des villes,
+                densite automobile, proximité de grands constructeurs) permettrait d'expliquer
+                plus finement les disparités de prix entre villes. Une carte interactive rendrait cette dimension encore plus lisible.")
+            )
+          )
+        )
+      )
+    )
+  )
+)
+
+# ============================================================
+#  SERVER
+# ============================================================
+server <- function(input, output, session) {
+
+  df <- reactive({
+    voitures %>%
+      filter(
+        Fuel_Type          %in% input$f_fuel,
+        Transmission       %in% input$f_trans,
+        trimws(Owner_Type) %in% input$f_owner,
+        Year               >= input$f_year[1],
+        Year               <= input$f_year[2],
+        Price_eur          >= input$f_price[1],
+        Price_eur          <= input$f_price[2]
+      )
+  })
+
+  # VALUE BOXES
+  output$vb_total <- renderValueBox({
+    valueBox(format(nrow(df()), big.mark = " "), "Voitures", icon = icon("car"), color = "blue")
+  })
+  output$vb_prix_moy <- renderValueBox({
+    valueBox(paste0(format(round(mean(df()$Price_eur, na.rm=TRUE), 0), big.mark=" "), " EUR"),
+             "Prix moyen", icon = icon("euro-sign"), color = "green")
+  })
+  output$vb_km_moy <- renderValueBox({
+    valueBox(paste0(format(round(mean(df()$Kilometers_Driven, na.rm=TRUE)), big.mark=" "), " km"),
+             "Kilometrage moyen", icon = icon("road"), color = "orange")
+  })
+  output$vb_age_moy <- renderValueBox({
+    valueBox(paste0(round(mean(2024 - df()$Year, na.rm=TRUE), 1), " ans"),
+             "Age moyen", icon = icon("calendar"), color = "purple")
+  })
+
+  # ONGLET 3
+  output$g_hist_prix <- renderPlot({
+    ggplot(df(), aes(x = Price_eur)) +
+      geom_histogram(bins=40, fill="#2c7be5", color="white", alpha=0.85) +
+      scale_x_continuous(labels = label_number(suffix=" EUR", big.mark=" ")) +
+      labs(x="Prix (EUR)", y="Nombre de voitures") + theme_cars()
+  })
+
+  output$g_box_fuel <- renderPlot({
+    ggplot(df(), aes(x=reorder(Fuel_Type, Price_eur, median), y=Price_eur, fill=Fuel_Type)) +
+      geom_boxplot(alpha=0.85, outlier.shape=NA) +
+      scale_fill_manual(values=palette_fuel) +
+      scale_y_continuous(labels=label_number(suffix=" EUR", big.mark=" "), limits=c(0,50000)) +
+      labs(x=NULL, y="Prix (EUR)") + theme_cars() + theme(legend.position="none")
+  })
+
+  output$g_pie_fuel <- renderPlot({
+    df() %>% count(Fuel_Type) %>%
+      mutate(pct = paste0(round(n/sum(n)*100, 1), "%")) %>%
+      ggplot(aes(x="", y=n, fill=Fuel_Type)) +
+      geom_col(width=1, color="white") +
+      geom_text(aes(label=pct), position=position_stack(vjust=0.5),
+                color="white", fontface="bold", size=3.5) +
+      coord_polar(theta="y") +
+      scale_fill_manual(values=palette_fuel) +
+      labs(fill=NULL) + theme_void() + theme(legend.position="bottom")
+  })
+
+  output$g_bar_trans <- renderPlot({
+    df() %>% count(Transmission) %>%
+      ggplot(aes(x=Transmission, y=n, fill=Transmission)) +
+      geom_col(alpha=0.85, width=0.5) +
+      geom_text(aes(label=format(n, big.mark=" ")), vjust=-0.4, fontface="bold") +
+      scale_fill_manual(values=c("Manual"="#2c7be5","Automatic"="#e55353")) +
+      labs(x=NULL, y="Nombre") + theme_cars() + theme(legend.position="none")
+  })
+
+  output$g_bar_owner <- renderPlot({
+    df() %>% count(Owner_Type) %>%
+      ggplot(aes(x=reorder(Owner_Type,-n), y=n, fill=Owner_Type)) +
+      geom_col(alpha=0.85, width=0.5) +
+      geom_text(aes(label=format(n, big.mark=" ")), vjust=-0.4, fontface="bold") +
+      scale_fill_brewer(palette="Set2") +
+      labs(x=NULL, y="Nombre") + theme_cars() + theme(legend.position="none")
+  })
+
+  # ONGLET 4
+  output$g_line_annee <- renderPlot({
+    df() %>% group_by(Year) %>%
+      summarise(Prix_Moyen=mean(Price_eur, na.rm=TRUE), n=n(), .groups="drop") %>%
+      ggplot(aes(x=Year, y=Prix_Moyen)) +
+      geom_line(color="#2c7be5", linewidth=1.3) +
+      geom_point(aes(size=n), color="#2c7be5", alpha=0.8) +
+      scale_y_continuous(labels=label_number(suffix=" EUR", big.mark=" ")) +
+      scale_size_continuous(name="Nb voitures", range=c(2,8)) +
+      labs(x="Annee", y="Prix moyen (EUR)") + theme_cars()
+  })
+
+  output$g_scatter_km <- renderPlot({
+    d_km <- df() %>% filter(Kilometers_Driven < 400000)
+    ggplot(d_km, aes(x=Kilometers_Driven, y=Price_eur, color=Fuel_Type)) +
+      geom_point(alpha=0.4, size=1.5) +
+      geom_smooth(method="lm", se=FALSE, linewidth=1, aes(group=1), color="#1a1a2e") +
+      scale_x_continuous(labels=label_number(big.mark=" ", suffix=" km")) +
+      scale_y_continuous(labels=label_number(suffix=" EUR", big.mark=" ")) +
+      scale_color_manual(values=palette_fuel) +
+      labs(x="Kilometrage", y="Prix (EUR)", color="Carburant") + theme_cars()
+  })
+
+  output$g_bar_ville <- renderPlot({
+    df() %>% group_by(Location) %>%
+      summarise(Prix_Moy=mean(Price_eur, na.rm=TRUE), .groups="drop") %>%
+      ggplot(aes(x=reorder(Location, Prix_Moy), y=Prix_Moy, fill=Prix_Moy)) +
+      geom_col(alpha=0.9) +
+      geom_text(aes(label=paste0(format(round(Prix_Moy,0), big.mark=" "), " EUR")),
+                hjust=-0.1, size=3.5) +
+      scale_fill_gradient(low="#a8d8ea", high="#2c7be5") +
+      scale_y_continuous(expand=expansion(mult=c(0,0.2)),
+                         labels=label_number(suffix=" EUR", big.mark=" ")) +
+      coord_flip() + labs(x=NULL, y="Prix moyen (EUR)") +
+      theme_cars() + theme(legend.position="none")
+  })
+
+  output$g_scatter_neuf <- renderPlot({
+    d <- df() %>% filter(!is.na(NewPrice_eur))
+    ggplot(d, aes(x=NewPrice_eur, y=Price_eur, color=Owner_Type)) +
+      geom_point(alpha=0.5, size=1.8) +
+      geom_abline(slope=1, intercept=0, linetype="dashed", color="grey50") +
+      scale_color_brewer(palette="Set1") +
+      scale_x_continuous(labels=label_number(suffix=" EUR", big.mark=" ")) +
+      scale_y_continuous(labels=label_number(suffix=" EUR", big.mark=" ")) +
+      labs(x="Prix neuf (EUR)", y="Prix occasion (EUR)", color="Proprietaire") + theme_cars()
+  })
+
+  output$g_box_owner <- renderPlot({
+    ggplot(df(), aes(x=Owner_Type, y=Price_eur, fill=Owner_Type)) +
+      geom_boxplot(alpha=0.85, outlier.shape=NA) +
+      scale_fill_brewer(palette="Set2") +
+      scale_y_continuous(labels=label_number(suffix=" EUR", big.mark=" "), limits=c(0,30000)) +
+      labs(x=NULL, y="Prix (EUR)") + theme_cars() + theme(legend.position="none")
+  })
+
+  # ONGLET 5
+  output$g_scatter_power <- renderPlot({
+    d <- df() %>% filter(!is.na(Power_num))
+    ggplot(d, aes(x=Power_num, y=Price_eur, color=Fuel_Type)) +
+      geom_point(alpha=0.4, size=1.5) +
+      geom_smooth(method="lm", se=TRUE, aes(group=1), color="#1a1a2e", fill="#1a1a2e", alpha=0.1) +
+      scale_color_manual(values=palette_fuel) +
+      scale_y_continuous(labels=label_number(suffix=" EUR", big.mark=" ")) +
+      labs(x="Puissance (bhp)", y="Prix (EUR)", color="Carburant") + theme_cars()
+  })
+
+  output$g_scatter_engine <- renderPlot({
+    d <- df() %>% filter(!is.na(Engine_num))
+    ggplot(d, aes(x=Engine_num, y=Price_eur, color=Transmission)) +
+      geom_point(alpha=0.4, size=1.5) +
+      geom_smooth(method="lm", se=TRUE, aes(group=1), color="#1a1a2e", fill="#1a1a2e", alpha=0.1) +
+      scale_color_manual(values=c("Manual"="#2c7be5","Automatic"="#e55353")) +
+      scale_y_continuous(labels=label_number(suffix=" EUR", big.mark=" ")) +
+      labs(x="Cylindree (CC)", y="Prix (EUR)", color="Transmission") + theme_cars()
+  })
+
+  output$g_scatter_mileage <- renderPlot({
+    d <- df() %>% filter(!is.na(Mileage_num))
+    ggplot(d, aes(x=Mileage_num, y=Price_eur, color=Fuel_Type)) +
+      geom_point(alpha=0.4, size=1.5) +
+      geom_smooth(method="lm", se=TRUE, aes(group=1), color="#1a1a2e", fill="#1a1a2e", alpha=0.1) +
+      scale_color_manual(values=palette_fuel) +
+      scale_y_continuous(labels=label_number(suffix=" EUR", big.mark=" ")) +
+      labs(x="Consommation (kmpl)", y="Prix (EUR)", color="Carburant") + theme_cars()
+  })
+
+  output$g_bar_seats <- renderPlot({
+    df() %>% filter(!is.na(Seats)) %>% group_by(Seats) %>%
+      summarise(Prix_Moy=mean(Price_eur, na.rm=TRUE), n=n(), .groups="drop") %>%
+      ggplot(aes(x=factor(Seats), y=Prix_Moy, fill=factor(Seats))) +
+      geom_col(alpha=0.85, width=0.6) +
+      geom_text(aes(label=paste0(format(round(Prix_Moy,0), big.mark=" "), " EUR\n(n=", n, ")")),
+                vjust=-0.3, size=3.2, fontface="bold") +
+      scale_fill_brewer(palette="Blues") +
+      scale_y_continuous(expand=expansion(mult=c(0,0.2)),
+                         labels=label_number(suffix=" EUR", big.mark=" ")) +
+      labs(x="Nombre de places", y="Prix moyen (EUR)") +
+      theme_cars() + theme(legend.position="none")
+  })
+
+  # ONGLET 6 : TABLEAU
+  output$tableau <- renderDT({
+    df() %>%
+      select(Name, Location, Year, Kilometers_Driven, Fuel_Type, Transmission,
+             Owner_Type, Mileage_num, Engine_num, Power_num, Seats, Price_eur) %>%
+      rename(Modele="Name", Ville="Location", Annee="Year", Kilometrage="Kilometers_Driven",
+             Carburant="Fuel_Type", Boite="Transmission", Proprietaire="Owner_Type",
+             `Conso (kmpl)`="Mileage_num", `Cylindree (CC)`="Engine_num",
+             `Puissance (bhp)`="Power_num", Places="Seats", `Prix (EUR)`="Price_eur") %>%
+      datatable(
+        extensions = "Buttons",
+        options = list(
+          dom="Bfrtip",
+          buttons=list("copy",
+                       list(extend="csv",   filename="voitures"),
+                       list(extend="excel", filename="voitures")),
+          pageLength=15, scrollX=TRUE,
+          language=list(search="Rechercher :", lengthMenu="Afficher _MENU_ lignes",
+                        info="Lignes _START_ a _END_ sur _TOTAL_",
+                        paginate=list(previous="Precedent", `next`="Suivant"))
+        ),
+        rownames=FALSE, class="stripe hover compact"
+      ) %>%
+      formatRound(c("Conso (kmpl)", "Puissance (bhp)"), digits=2) %>%
+      formatCurrency("Prix (EUR)", currency="EUR", interval=3, mark=" ", digits=0, before=FALSE) %>%
+      formatStyle("Prix (EUR)",
+                  background=styleColorBar(range(df()$Price_eur, na.rm=TRUE), "#2c7be5"),
+                  backgroundSize="100% 90%", backgroundRepeat="no-repeat",
+                  backgroundPosition="center")
+  })
+}
+
+# ============================================================
+shinyApp(ui = ui, server = server)
